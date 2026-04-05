@@ -145,7 +145,7 @@ Risky tools such as shell commands and file writes are gated by approval.
 - `--approval ask`
   prompts before risky actions (default and recommended)
 - `--approval auto`
-  allows risky actions automatically (convenient but riskier)
+  allows risky actions automatically, including arbitrary command execution and file writes by the model; use only with trusted prompts and trusted repositories
 - `--approval never`
   denies risky actions
 
