@@ -254,6 +254,69 @@ def test_welcome_screen_keeps_box_shape_for_long_paths(tmp_path):
     assert "commands: Commands:" not in welcome
 
 
+def _make_filler(i):
+    return {"role": "tool", "name": "list_files", "args": {}, "content": "", "created_at": str(i)}
+
+
+def test_history_text_deduplicates_reads_but_not_after_write(tmp_path):
+    """read_file deduplication must not skip a read that follows a write.
+
+    Realistic prior-turn history (non-recent window):
+        user: "update config"
+        assistant: <tool>read_file config</tool>
+        tool:   config v1 (content: setting=true)
+        assistant: <tool>write_file config</tool>
+        tool:   wrote
+        assistant: <tool>read_file config</tool>
+        tool:   config v2 (content: setting=false)   <- MUST NOT be skipped
+
+    Without fix: seen_reads={"config"} after first read; write does NOT clear it;
+                 second read is wrongly skipped (LLM sees stale content).
+    With fix: write clears seen_reads, second read is correctly shown.
+    """
+    agent = build_agent(tmp_path, [])
+
+    # Simulate a prior turn with read->write->read on the same file
+    # history_length=13, recent_start=7 (indices 0-6 non-recent, 7-12 recent)
+    agent.record({"role": "user", "content": "update config", "created_at": "0"})        # index 0
+    agent.record({"role": "assistant", "content": '<tool>{"name":"read_file","args":{"path":"config.txt"}}</tool>', "created_at": "1"})
+    agent.record({"role": "tool", "name": "read_file", "args": {"path": "config.txt"}, "content": "# config.txt\n   1: setting=true\n", "created_at": "2"})  # index 2, non-recent, ADDED
+    agent.record({"role": "assistant", "content": '<tool>{"name":"write_file","args":{"path":"config.txt","content":"setting=false\n"}}</tool>', "created_at": "3"})
+    agent.record({"role": "tool", "name": "write_file", "args": {"path": "config.txt", "content": "setting=false\n"}, "content": "wrote config.txt", "created_at": "4"})  # index 4, non-recent
+    agent.record({"role": "assistant", "content": '<tool>{"name":"read_file","args":{"path":"config.txt"}}</tool>', "created_at": "5"})
+    agent.record({"role": "tool", "name": "read_file", "args": {"path": "config.txt"}, "content": "# config.txt\n   1: setting=false\n", "created_at": "6"})  # index 6, non-recent, ADDED (write cleared dedup)
+    # recent entries
+    for i in range(7, 13):
+        agent.record(_make_filler(i))
+
+    history = agent.history_text()
+
+    # Both read contents appear exactly once (check full line to avoid JSON false positives)
+    assert "# config.txt\n   1: setting=true\n" in history
+    assert "# config.txt\n   1: setting=false\n" in history
+    # Also verify duplicate read (setting=true, same path) does NOT appear twice
+    assert history.count("setting=true") == 1
+
+
+def test_history_text_deduplicates_unchanged_repeated_reads(tmp_path):
+    """read_file deduplication should still skip repeated reads with no write in between."""
+    agent = build_agent(tmp_path, [])
+
+    # Realistic: two identical reads with no write between them
+    # history_length=10, recent_start=4 (indices 0-3 non-recent, 4-9 recent)
+    agent.record({"role": "user", "content": "check logs", "created_at": "0"})  # index 0
+    agent.record({"role": "assistant", "content": '<tool>{"name":"read_file","args":{"path":"log.txt"}}</tool>', "created_at": "1"})
+    agent.record({"role": "tool", "name": "read_file", "args": {"path": "log.txt"}, "content": "# log.txt\n   1: stable\n", "created_at": "2"})  # index 2, non-recent, ADDED
+    agent.record({"role": "assistant", "content": '<tool>{"name":"read_file","args":{"path":"log.txt"}}</tool>', "created_at": "3"})  # index 3, non-recent, SKIPPED (dup)
+    for i in range(4, 10):
+        agent.record(_make_filler(i))  # indices 4-9, recent
+
+    history = agent.history_text()
+
+    # Only first read should appear; duplicates must be skipped
+    assert history.count("stable") == 1
+
+
 def test_ollama_client_posts_expected_payload():
     captured = {}
 
