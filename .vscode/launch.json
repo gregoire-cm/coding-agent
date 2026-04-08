@@ -1,0 +1,18 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "mini-coding-agent",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "mini_coding_agent",
+            "args": [
+                "--cwd", "./tmp/merge-sort-repo",
+                "--model", "qwen3.5:4b"
+            ],
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal"
+        }
+    ]
+}

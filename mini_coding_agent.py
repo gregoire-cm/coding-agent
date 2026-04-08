@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import argparse
 import json
 import re
@@ -10,6 +12,7 @@ import urllib.request
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 
 DOC_NAMES = ("AGENTS.md", "README.md", "pyproject.toml", "package.json")
@@ -41,25 +44,25 @@ IGNORED_PATH_NAMES = {".git", ".mini-coding-agent", "__pycache__", ".pytest_cach
 ##############################
 # 1) Live Repo Context -> WorkspaceContext
 # 2) Prompt Shape And Cache Reuse -> build_prefix, memory_text, prompt
-# 3) Structured Tools, Validation, And Permissions -> build_tools, run_tool, validate_tool, approve, parse, path, tool_*
-# 4) Context Reduction And Output Management -> clip, history_text
-# 5) Transcripts, Memory, And Resumption -> SessionStore, record, note_tool, ask, reset
-# 6) Delegation And Bounded Subagents -> tool_delegate
+# 3) Structured Tools, Validation, And Permissions -> build_tools, _run_tool, _validate_tool, approve, parse, path, tool_*
+# 4) Context Reduction And Output Management -> clip, _history_text
+# 5) Transcripts, Memory, And Resumption -> SessionStore, record, _note_tool, ask, reset
+# 6) Delegation And Bounded Subagents -> _tool_delegate
 
 
-def now():
+def now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
 # Supporting helper for component 4 (context reduction and output management).
-def clip(text, limit=MAX_TOOL_OUTPUT):
+def clip(text: object, limit: int = MAX_TOOL_OUTPUT) -> str:
     text = str(text)
     if len(text) <= limit:
         return text
     return text[:limit] + f"\n...[truncated {len(text) - limit} chars]"
 
 
-def middle(text, limit):
+def middle(text: object, limit: int) -> str:
     text = str(text).replace("\n", " ")
     if len(text) <= limit:
         return text
@@ -74,7 +77,16 @@ def middle(text, limit):
 #### 1) Live Repo Context ####
 ##############################
 class WorkspaceContext:
-    def __init__(self, cwd, repo_root, branch, default_branch, status, recent_commits, project_docs):
+    def __init__(
+        self,
+        cwd: str,
+        repo_root: str,
+        branch: str,
+        default_branch: str,
+        status: str,
+        recent_commits: list[str],
+        project_docs: dict[str, str],
+    ) -> None:
         self.cwd = cwd
         self.repo_root = repo_root
         self.branch = branch
@@ -84,10 +96,10 @@ class WorkspaceContext:
         self.project_docs = project_docs
 
     @classmethod
-    def build(cls, cwd):
+    def build(cls, cwd: str | Path) -> WorkspaceContext:
         cwd = Path(cwd).resolve()
 
-        def git(args, fallback=""):
+        def git(args: list[str], fallback: str = "") -> str:
             try:
                 result = subprocess.run(
                     ["git", *args],
@@ -123,7 +135,7 @@ class WorkspaceContext:
             project_docs=docs,
         )
 
-    def text(self):
+    def text(self) -> str:
         commits = "\n".join(f"- {line}" for line in self.recent_commits) or "- none"
         docs = "\n".join(f"- {path}\n{snippet}" for path, snippet in self.project_docs.items()) or "- none"
         return textwrap.dedent(
@@ -147,32 +159,32 @@ class WorkspaceContext:
 #### 5) Session Memory #######
 ##############################
 class SessionStore:
-    def __init__(self, root):
+    def __init__(self, root: str | Path) -> None:
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
 
-    def path(self, session_id):
+    def path(self, session_id: str) -> Path:
         return self.root / f"{session_id}.json"
 
-    def save(self, session):
+    def save(self, session: dict[str, Any]) -> Path:
         path = self.path(session["id"])
         path.write_text(json.dumps(session, indent=2), encoding="utf-8")
         return path
 
-    def load(self, session_id):
+    def load(self, session_id: str) -> dict[str, Any]:
         return json.loads(self.path(session_id).read_text(encoding="utf-8"))
 
-    def latest(self):
+    def latest(self) -> str | None:
         files = sorted(self.root.glob("*.json"), key=lambda path: path.stat().st_mtime)
         return files[-1].stem if files else None
 
 
 class FakeModelClient:
-    def __init__(self, outputs):
+    def __init__(self, outputs: list[str]) -> None:
         self.outputs = list(outputs)
-        self.prompts = []
+        self.prompts: list[str] = []
 
-    def complete(self, prompt, max_new_tokens):
+    def complete(self, prompt: str, max_new_tokens: int) -> str:
         self.prompts.append(prompt)
         if not self.outputs:
             raise RuntimeError("fake model ran out of outputs")
@@ -180,14 +192,14 @@ class FakeModelClient:
 
 
 class OllamaModelClient:
-    def __init__(self, model, host, temperature, top_p, timeout):
+    def __init__(self, model: str, host: str, temperature: float, top_p: float, timeout: int) -> None:
         self.model = model
         self.host = host.rstrip("/")
         self.temperature = temperature
         self.top_p = top_p
         self.timeout = timeout
 
-    def complete(self, prompt, max_new_tokens):
+    def complete(self, prompt: str, max_new_tokens: int) -> str:
         payload = {
             "model": self.model,
             "prompt": prompt,
@@ -228,17 +240,17 @@ class OllamaModelClient:
 class MiniAgent:
     def __init__(
         self,
-        model_client,
-        workspace,
-        session_store,
-        session=None,
-        approval_policy="ask",
-        max_steps=6,
-        max_new_tokens=512,
-        depth=0,
-        max_depth=1,
-        read_only=False,
-    ):
+        model_client: Any,
+        workspace: WorkspaceContext,
+        session_store: SessionStore,
+        session: dict[str, Any] | None = None,
+        approval_policy: str = "ask",
+        max_steps: int = 6,
+        max_new_tokens: int = 512,
+        depth: int = 0,
+        max_depth: int = 1,
+        read_only: bool = False,
+    ) -> None:
         self.model_client = model_client
         self.workspace = workspace
         self.root = Path(workspace.repo_root)
@@ -256,12 +268,12 @@ class MiniAgent:
             "history": [],
             "memory": {"task": "", "files": [], "notes": []},
         }
-        self.tools = self.build_tools()
-        self.prefix = self.build_prefix()
+        self.tools = self._build_tools()
+        self.prefix = self._build_prefix()
         self.session_path = self.session_store.save(self.session)
 
     @classmethod
-    def from_session(cls, model_client, workspace, session_store, session_id, **kwargs):
+    def from_session(cls, model_client: Any, workspace: WorkspaceContext, session_store: SessionStore, session_id: str, **kwargs: Any) -> MiniAgent:
         return cls(
             model_client=model_client,
             workspace=workspace,
@@ -271,7 +283,7 @@ class MiniAgent:
         )
 
     @staticmethod
-    def remember(bucket, item, limit):
+    def _remember(bucket: list[str], item: str, limit: int) -> None:
         if not item:
             return
         if item in bucket:
@@ -282,43 +294,43 @@ class MiniAgent:
     ###############################################
     #### 3) Structured Tools And Permissions ######
     ###############################################
-    def build_tools(self):
+    def _build_tools(self) -> dict[str, Any]:
         tools = {
             "list_files": {
                 "schema": {"path": "str='.'"},
                 "risky": False,
                 "description": "List files in the workspace.",
-                "run": self.tool_list_files,
+                "run": self._tool_list_files,
             },
             "read_file": {
                 "schema": {"path": "str", "start": "int=1", "end": "int=200"},
                 "risky": False,
                 "description": "Read a UTF-8 file by line range.",
-                "run": self.tool_read_file,
+                "run": self._tool_read_file,
             },
             "search": {
                 "schema": {"pattern": "str", "path": "str='.'"},
                 "risky": False,
                 "description": "Search the workspace with rg or a simple fallback.",
-                "run": self.tool_search,
+                "run": self._tool_search,
             },
             "run_shell": {
                 "schema": {"command": "str", "timeout": "int=20"},
                 "risky": True,
                 "description": "Run a shell command in the repo root.",
-                "run": self.tool_run_shell,
+                "run": self._tool_run_shell,
             },
             "write_file": {
                 "schema": {"path": "str", "content": "str"},
                 "risky": True,
                 "description": "Write a text file.",
-                "run": self.tool_write_file,
+                "run": self._tool_write_file,
             },
             "patch_file": {
                 "schema": {"path": "str", "old_text": "str", "new_text": "str"},
                 "risky": True,
                 "description": "Replace one exact text block in a file.",
-                "run": self.tool_patch_file,
+                "run": self._tool_patch_file,
             },
         }
         if self.depth < self.max_depth:
@@ -326,14 +338,14 @@ class MiniAgent:
                 "schema": {"task": "str", "max_steps": "int=3"},
                 "risky": False,
                 "description": "Ask a bounded read-only child agent to investigate.",
-                "run": self.tool_delegate,
+                "run": self._tool_delegate,
             }
         return tools
 
     ############################################
     #### 2) Prompt Shape And Cache Reuse #######
     ############################################
-    def build_prefix(self):
+    def _build_prefix(self) -> str:
         tool_lines = []
         for name, tool in self.tools.items():
             fields = ", ".join(f"{key}: {value}" for key, value in tool["schema"].items())
@@ -382,7 +394,7 @@ class MiniAgent:
             """
         ).strip()
 
-    def memory_text(self):
+    def memory_text(self) -> str:
         memory = self.session["memory"]
         return textwrap.dedent(
             f"""\
@@ -397,7 +409,7 @@ class MiniAgent:
     #####################################################
     #### 4) Context Reduction And Output Management #####
     #####################################################
-    def history_text(self):
+    def _history_text(self) -> str:
         history = self.session["history"]
         if not history:
             return "- empty"
@@ -429,7 +441,7 @@ class MiniAgent:
     ########################################################
     #### 2) Prompt Shape And Cache Reuse (Continued) #######
     ########################################################
-    def prompt(self, user_message):
+    def _prompt(self, user_message: str) -> str:
         return textwrap.dedent(
             f"""\
             {self.prefix}
@@ -437,7 +449,7 @@ class MiniAgent:
             {self.memory_text()}
 
             Transcript:
-            {self.history_text()}
+            {self._history_text()}
 
             Current user request:
             {user_message}
@@ -447,23 +459,23 @@ class MiniAgent:
     ###############################################
     #### 5) Session Memory (Continued) ###########
     ###############################################
-    def record(self, item):
+    def _record(self, item: dict[str, Any]) -> None:
         self.session["history"].append(item)
         self.session_path = self.session_store.save(self.session)
 
-    def note_tool(self, name, args, result):
+    def _note_tool(self, name: str, args: dict[str, Any], result: str) -> None:
         memory = self.session["memory"]
         path = args.get("path")
         if name in {"read_file", "write_file", "patch_file"} and path:
-            self.remember(memory["files"], str(path), 8)
+            self._remember(memory["files"], str(path), 8)
         note = f"{name}: {clip(str(result).replace(chr(10), ' '), 220)}"
-        self.remember(memory["notes"], note, 5)
+        self._remember(memory["notes"], note, 5)
 
-    def ask(self, user_message):
+    def ask(self, user_message: str) -> str:
         memory = self.session["memory"]
         if not memory["task"]:
             memory["task"] = clip(user_message.strip(), 300)
-        self.record({"role": "user", "content": user_message, "created_at": now()})
+        self._record({"role": "user", "content": user_message, "created_at": now()})
 
         tool_steps = 0
         attempts = 0
@@ -471,15 +483,15 @@ class MiniAgent:
 
         while tool_steps < self.max_steps and attempts < max_attempts:
             attempts += 1
-            raw = self.model_client.complete(self.prompt(user_message), self.max_new_tokens)
-            kind, payload = self.parse(raw)
+            raw = self.model_client.complete(self._prompt(user_message), self.max_new_tokens)
+            kind, payload = self._parse(raw)
 
             if kind == "tool":
                 tool_steps += 1
                 name = payload.get("name", "")
                 args = payload.get("args", {})
-                result = self.run_tool(name, args)
-                self.record(
+                result = self._run_tool(name, args)
+                self._record(
                     {
                         "role": "tool",
                         "name": name,
@@ -488,57 +500,57 @@ class MiniAgent:
                         "created_at": now(),
                     }
                 )
-                self.note_tool(name, args, result)
+                self._note_tool(name, args, result)
                 continue
 
             if kind == "retry":
-                self.record({"role": "assistant", "content": payload, "created_at": now()})
+                self._record({"role": "assistant", "content": payload, "created_at": now()})
                 continue
 
             final = (payload or raw).strip()
-            self.record({"role": "assistant", "content": final, "created_at": now()})
-            self.remember(memory["notes"], clip(final, 220), 5)
+            self._record({"role": "assistant", "content": final, "created_at": now()})
+            self._remember(memory["notes"], clip(final, 220), 5)
             return final
 
         if attempts >= max_attempts and tool_steps < self.max_steps:
             final = "Stopped after too many malformed model responses without a valid tool call or final answer."
         else:
             final = "Stopped after reaching the step limit without a final answer."
-        self.record({"role": "assistant", "content": final, "created_at": now()})
+        self._record({"role": "assistant", "content": final, "created_at": now()})
         return final
 
     #############################################################
     #### 3) Structured Tools, Validation, And Permissions #######
     #############################################################
-    def run_tool(self, name, args):
+    def _run_tool(self, name: str, args: dict[str, Any]) -> str:
         tool = self.tools.get(name)
         if tool is None:
             return f"error: unknown tool '{name}'"
         try:
-            self.validate_tool(name, args)
+            self._validate_tool(name, args)
         except Exception as exc:
-            example = self.tool_example(name)
+            example = self._tool_example(name)
             message = f"error: invalid arguments for {name}: {exc}"
             if example:
                 message += f"\nexample: {example}"
             return message
-        if self.repeated_tool_call(name, args):
+        if self._repeated_tool_call(name, args):
             return f"error: repeated identical tool call for {name}; choose a different tool or return a final answer"
-        if tool["risky"] and not self.approve(name, args):
+        if tool["risky"] and not self._approve(name, args):
             return f"error: approval denied for {name}"
         try:
             return clip(tool["run"](args))
         except Exception as exc:
             return f"error: tool {name} failed: {exc}"
 
-    def repeated_tool_call(self, name, args):
+    def _repeated_tool_call(self, name: str, args: dict[str, Any]) -> bool:
         tool_events = [item for item in self.session["history"] if item["role"] == "tool"]
         if len(tool_events) < 2:
             return False
         recent = tool_events[-2:]
         return all(item["name"] == name and item["args"] == args for item in recent)
 
-    def tool_example(self, name):
+    def _tool_example(self, name: str) -> str:
         examples = {
             "list_files": '<tool>{"name":"list_files","args":{"path":"."}}</tool>',
             "read_file": '<tool>{"name":"read_file","args":{"path":"README.md","start":1,"end":80}}</tool>',
@@ -550,17 +562,17 @@ class MiniAgent:
         }
         return examples.get(name, "")
 
-    def validate_tool(self, name, args):
+    def _validate_tool(self, name: str, args: dict[str, Any]) -> None:
         args = args or {}
 
         if name == "list_files":
-            path = self.path(args.get("path", "."))
+            path = self._path(args.get("path", "."))
             if not path.is_dir():
                 raise ValueError("path is not a directory")
             return
 
         if name == "read_file":
-            path = self.path(args["path"])
+            path = self._path(args["path"])
             if not path.is_file():
                 raise ValueError("path is not a file")
             start = int(args.get("start", 1))
@@ -573,7 +585,7 @@ class MiniAgent:
             pattern = str(args.get("pattern", "")).strip()
             if not pattern:
                 raise ValueError("pattern must not be empty")
-            self.path(args.get("path", "."))
+            self._path(args.get("path", "."))
             return
 
         if name == "run_shell":
@@ -586,7 +598,7 @@ class MiniAgent:
             return
 
         if name == "write_file":
-            path = self.path(args["path"])
+            path = self._path(args["path"])
             if path.exists() and path.is_dir():
                 raise ValueError("path is a directory")
             if "content" not in args:
@@ -594,7 +606,7 @@ class MiniAgent:
             return
 
         if name == "patch_file":
-            path = self.path(args["path"])
+            path = self._path(args["path"])
             if not path.is_file():
                 raise ValueError("path is not a file")
             old_text = str(args.get("old_text", ""))
@@ -616,7 +628,7 @@ class MiniAgent:
                 raise ValueError("task must not be empty")
             return
 
-    def approve(self, name, args):
+    def _approve(self, name: str, args: dict[str, Any]) -> bool:
         if self.read_only:
             return False
         if self.approval_policy == "auto":
@@ -630,41 +642,41 @@ class MiniAgent:
         return answer.strip().lower() in {"y", "yes"}
 
     @staticmethod
-    def parse(raw):
+    def _parse(raw: str) -> tuple[str, Any]:
         raw = str(raw)
         if "<tool>" in raw and ("<final>" not in raw or raw.find("<tool>") < raw.find("<final>")):
-            body = MiniAgent.extract(raw, "tool")
+            body = MiniAgent._extract(raw, "tool")
             try:
                 payload = json.loads(body)
             except Exception:
-                return "retry", MiniAgent.retry_notice("model returned malformed tool JSON")
+                return "retry", MiniAgent._retry_notice("model returned malformed tool JSON")
             if not isinstance(payload, dict):
-                return "retry", MiniAgent.retry_notice("tool payload must be a JSON object")
+                return "retry", MiniAgent._retry_notice("tool payload must be a JSON object")
             if not str(payload.get("name", "")).strip():
-                return "retry", MiniAgent.retry_notice("tool payload is missing a tool name")
+                return "retry", MiniAgent._retry_notice("tool payload is missing a tool name")
             args = payload.get("args", {})
             if args is None:
                 payload["args"] = {}
             elif not isinstance(args, dict):
-                return "retry", MiniAgent.retry_notice()
+                return "retry", MiniAgent._retry_notice()
             return "tool", payload
         if "<tool" in raw and ("<final>" not in raw or raw.find("<tool") < raw.find("<final>")):
-            payload = MiniAgent.parse_xml_tool(raw)
+            payload = MiniAgent._parse_xml_tool(raw)
             if payload is not None:
                 return "tool", payload
-            return "retry", MiniAgent.retry_notice()
+            return "retry", MiniAgent._retry_notice()
         if "<final>" in raw:
-            final = MiniAgent.extract(raw, "final").strip()
+            final = MiniAgent._extract(raw, "final").strip()
             if final:
                 return "final", final
-            return "retry", MiniAgent.retry_notice("model returned an empty <final> answer")
+            return "retry", MiniAgent._retry_notice("model returned an empty <final> answer")
         raw = raw.strip()
         if raw:
             return "final", raw
-        return "retry", MiniAgent.retry_notice("model returned an empty response")
+        return "retry", MiniAgent._retry_notice("model returned an empty response")
 
     @staticmethod
-    def retry_notice(problem=None):
+    def _retry_notice(problem: str | None = None) -> str:
         prefix = "Runtime notice"
         if problem:
             prefix += f": {problem}"
@@ -676,11 +688,11 @@ class MiniAgent:
         )
 
     @staticmethod
-    def parse_xml_tool(raw):
+    def _parse_xml_tool(raw: str) -> dict[str, Any] | None:
         match = re.search(r"<tool(?P<attrs>[^>]*)>(?P<body>.*?)</tool>", raw, re.S)
         if not match:
             return None
-        attrs = MiniAgent.parse_attrs(match.group("attrs"))
+        attrs = MiniAgent._parse_attrs(match.group("attrs"))
         name = str(attrs.pop("name", "")).strip()
         if not name:
             return None
@@ -689,7 +701,7 @@ class MiniAgent:
         args = dict(attrs)
         for key in ("content", "old_text", "new_text", "command", "task", "pattern", "path"):
             if f"<{key}>" in body:
-                args[key] = MiniAgent.extract_raw(body, key)
+                args[key] = MiniAgent._extract_raw(body, key)
 
         body_text = body.strip("\n")
         if name == "write_file" and "content" not in args and body_text:
@@ -699,14 +711,14 @@ class MiniAgent:
         return {"name": name, "args": args}
 
     @staticmethod
-    def parse_attrs(text):
+    def _parse_attrs(text: str) -> dict[str, str]:
         attrs = {}
         for match in re.finditer(r"""([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:"([^"]*)"|'([^']*)')""", text):
             attrs[match.group(1)] = match.group(2) if match.group(2) is not None else match.group(3)
         return attrs
 
     @staticmethod
-    def extract(text, tag):
+    def _extract(text: str, tag: str) -> str:
         start_tag = f"<{tag}>"
         end_tag = f"</{tag}>"
         start = text.find(start_tag)
@@ -719,7 +731,7 @@ class MiniAgent:
         return text[start:end].strip()
 
     @staticmethod
-    def extract_raw(text, tag):
+    def _extract_raw(text: str, tag: str) -> str:
         start_tag = f"<{tag}>"
         end_tag = f"</{tag}>"
         start = text.find(start_tag)
@@ -731,12 +743,12 @@ class MiniAgent:
             return text[start:]
         return text[start:end]
 
-    def reset(self):
+    def reset(self) -> None:
         self.session["history"] = []
         self.session["memory"] = {"task": "", "files": [], "notes": []}
         self.session_store.save(self.session)
 
-    def path_is_within_root(self, resolved):
+    def _path_is_within_root(self, resolved: Path) -> bool:
         probe = resolved
         while not probe.exists() and probe.parent != probe:
             probe = probe.parent
@@ -748,16 +760,16 @@ class MiniAgent:
                 continue
         return False
 
-    def path(self, raw_path):
+    def _path(self, raw_path: str) -> Path:
         path = Path(raw_path)
         path = path if path.is_absolute() else self.root / path
         resolved = path.resolve()
-        if not self.path_is_within_root(resolved):
+        if not self._path_is_within_root(resolved):
             raise ValueError(f"path escapes workspace: {raw_path}")
         return resolved
 
-    def tool_list_files(self, args):
-        path = self.path(args.get("path", "."))
+    def _tool_list_files(self, args: dict[str, Any]) -> str:
+        path = self._path(args.get("path", "."))
         if not path.is_dir():
             raise ValueError("path is not a directory")
         entries = [
@@ -770,8 +782,8 @@ class MiniAgent:
             lines.append(f"{kind} {entry.relative_to(self.root)}")
         return "\n".join(lines) or "(empty)"
 
-    def tool_read_file(self, args):
-        path = self.path(args["path"])
+    def _tool_read_file(self, args: dict[str, Any]) -> str:
+        path = self._path(args["path"])
         if not path.is_file():
             raise ValueError("path is not a file")
         start = int(args.get("start", 1))
@@ -782,11 +794,11 @@ class MiniAgent:
         body = "\n".join(f"{number:>4}: {line}" for number, line in enumerate(lines[start - 1:end], start=start))
         return f"# {path.relative_to(self.root)}\n{body}"
 
-    def tool_search(self, args):
+    def _tool_search(self, args: dict[str, Any]) -> str:
         pattern = str(args.get("pattern", "")).strip()
         if not pattern:
             raise ValueError("pattern must not be empty")
-        path = self.path(args.get("path", "."))
+        path = self._path(args.get("path", "."))
 
         if shutil.which("rg"):
             result = subprocess.run(
@@ -810,7 +822,7 @@ class MiniAgent:
                         return "\n".join(matches)
         return "\n".join(matches) or "(no matches)"
 
-    def tool_run_shell(self, args):
+    def _tool_run_shell(self, args: dict[str, Any]) -> str:
         command = str(args.get("command", "")).strip()
         if not command:
             raise ValueError("command must not be empty")
@@ -835,15 +847,15 @@ class MiniAgent:
             """
         ).strip()
 
-    def tool_write_file(self, args):
-        path = self.path(args["path"])
+    def _tool_write_file(self, args: dict[str, Any]) -> str:
+        path = self._path(args["path"])
         content = str(args["content"])
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
         return f"wrote {path.relative_to(self.root)} ({len(content)} chars)"
 
-    def tool_patch_file(self, args):
-        path = self.path(args["path"])
+    def _tool_patch_file(self, args: dict[str, Any]) -> str:
+        path = self._path(args["path"])
         if not path.is_file():
             raise ValueError("path is not a file")
         old_text = str(args.get("old_text", ""))
@@ -861,7 +873,7 @@ class MiniAgent:
     ###################################################
     #### 6) Delegation And Bounded Subagents ##########
     ###################################################
-    def tool_delegate(self, args):
+    def _tool_delegate(self, args: dict[str, Any]) -> str:
         if self.depth >= self.max_depth:
             raise ValueError("delegate depth exceeded")
         task = str(args.get("task", "")).strip()
@@ -879,11 +891,11 @@ class MiniAgent:
             read_only=True,
         )
         child.session["memory"]["task"] = task
-        child.session["memory"]["notes"] = [clip(self.history_text(), 300)]
+        child.session["memory"]["notes"] = [clip(self._history_text(), 300)]
         return "delegate_result:\n" + child.ask(task)
 
 
-def build_welcome(agent, model, host):
+def build_welcome(agent: MiniAgent, model: str, host: str) -> str:
     width = max(68, min(shutil.get_terminal_size((80, 20)).columns, 84))
     inner = width - 4
     gap = 3
@@ -926,7 +938,7 @@ def build_welcome(agent, model, host):
     return "\n".join([line, *rows, line])
 
 
-def build_agent(args):
+def build_agent(args: argparse.Namespace) -> MiniAgent:
     workspace = WorkspaceContext.build(args.cwd)
     store = SessionStore(Path(workspace.repo_root) / ".mini-coding-agent" / "sessions")
     model = OllamaModelClient(
@@ -959,7 +971,7 @@ def build_agent(args):
     )
 
 
-def build_arg_parser():
+def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
         description="Minimal coding agent for Ollama models.",
@@ -983,7 +995,7 @@ def build_arg_parser():
     return parser
 
 
-def main(argv=None):
+def main(argv: list[str] | None = None) -> int:
     args = build_arg_parser().parse_args(argv)
     agent = build_agent(args)
 
