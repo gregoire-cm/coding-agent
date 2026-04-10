@@ -30,6 +30,8 @@ htmlcov/
 
 # Local scratch space
 tmp/
+example/
 
 # OS files
 .DS_Store
+

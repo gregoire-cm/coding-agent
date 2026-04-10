@@ -10,6 +10,7 @@ import textwrap
 import urllib.error
 import urllib.request
 import uuid
+import cohere
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -235,6 +236,22 @@ class OllamaModelClient:
         if data.get("error"):
             raise RuntimeError(f"Ollama error: {data['error']}")
         return data.get("response", "")
+
+
+class CohereModelClient:
+    def __init__(self, model: str, api_key: str, temperature: float) -> None:
+        self.model = model
+        self.temperature = temperature
+        self.co = cohere.ClientV2(api_key=api_key)
+
+    def complete(self, prompt: str, max_new_tokens: int) -> str:
+        response = self.co.chat(
+            model=self.model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=self.temperature,
+            max_tokens=max_new_tokens,
+        )
+        return response.message.content[0].text
 
 
 class MiniAgent:
@@ -941,13 +958,22 @@ def build_welcome(agent: MiniAgent, model: str, host: str) -> str:
 def build_agent(args: argparse.Namespace) -> MiniAgent:
     workspace = WorkspaceContext.build(args.cwd)
     store = SessionStore(Path(workspace.repo_root) / ".mini-coding-agent" / "sessions")
-    model = OllamaModelClient(
-        model=args.model,
-        host=args.host,
-        temperature=args.temperature,
-        top_p=args.top_p,
-        timeout=args.ollama_timeout,
-    )
+    if args.backend == "cohere":
+        if not args.cohere_api_key:
+            raise SystemExit("--cohere-api-key is required when --backend=cohere")
+        model = CohereModelClient(
+            model=args.cohere_model,
+            api_key=args.cohere_api_key,
+            temperature=args.cohere_temperature,
+        )
+    else:
+        model = OllamaModelClient(
+            model=args.model,
+            host=args.host,
+            temperature=args.temperature,
+            top_p=args.top_p,
+            timeout=args.ollama_timeout,
+        )
     session_id = args.resume
     if session_id == "latest":
         session_id = store.latest()
@@ -990,8 +1016,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--max-steps", type=int, default=6, help="Maximum tool/model iterations per request.")
     parser.add_argument("--max-new-tokens", type=int, default=512, help="Maximum model output tokens per step.")
-    parser.add_argument("--temperature", type=float, default=0.2, help="Sampling temperature sent to Ollama.")
+    parser.add_argument("--temperature", type=float, default=0.2, help="Sampling temperature.")
     parser.add_argument("--top-p", type=float, default=0.9, help="Top-p sampling value sent to Ollama.")
+    parser.add_argument(
+        "--backend",
+        choices=("ollama", "cohere"),
+        default="ollama",
+        help="Model backend to use.",
+    )
+    parser.add_argument("--cohere-api-key", default=None, help="Cohere API key (required when --backend=cohere).")
+    parser.add_argument("--cohere-model", default="command-a-03-2025", help="Cohere model name.")
+    parser.add_argument("--cohere-temperature", type=float, default=0.3, help="Sampling temperature for Cohere.")
     return parser
 
 
@@ -999,7 +1034,13 @@ def main(argv: list[str] | None = None) -> int:
     args = build_arg_parser().parse_args(argv)
     agent = build_agent(args)
 
-    print(build_welcome(agent, model=args.model, host=args.host))
+    if args.backend == "cohere":
+        active_model = args.cohere_model
+        active_host = "cohere"
+    else:
+        active_model = args.model
+        active_host = args.host
+    print(build_welcome(agent, model=active_model, host=active_host))
 
     if args.prompt:
         prompt = " ".join(args.prompt).strip()
